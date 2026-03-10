@@ -1,0 +1,66 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hello-service-sa
+  namespace: default
+  annotations:
+    # Links K8s Service Account to GCP IAM for Workload Identity
+    iam.gke.io/gcp-service-account: skynet-code-test@skynet-2026-code-test-mahmud.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-service
+  namespace: default
+  labels:
+    app: hello-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-service
+  template:
+    metadata:
+      labels:
+        app: hello-service
+    spec:
+      serviceAccountName: hello-service-sa
+      containers:
+      - name: hello-service
+        image: us-central1-docker.pkg.dev/skynet-2026-code-test-mahmud/app-repo/hello-service:1.7
+        ports:
+        - containerPort: 8080
+          name: metrics
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        # CRITICAL: Ensures Python logs are sent to stdout immediately (no buffering)
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        # Matches your FastAPI port
+        - name: PORT
+          value: "8080"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-service
+  namespace: default
+  labels:
+    app: hello-service
+  annotations:
+    # Allows Prometheus to auto-discover this service
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  type: LoadBalancer # Change to ClusterIP if using an Ingress
+  selector:
+    app: hello-service
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+      name: metrics
