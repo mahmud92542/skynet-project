@@ -4,53 +4,87 @@ import socket
 import uuid
 import time
 import sys
-import logging
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
-
-# Configure standard logging to use stdout
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger(__name__)
+from starlette.middleware.base import BaseHTTPMiddleware
 
 app = FastAPI()
 
-REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["endpoint"])
+# Metrics
+REQUEST_COUNT = Counter("http_requests_total", "Total", ["endpoint", "status"])
 pod_name = os.getenv("HOSTNAME", socket.gethostname())
+
+# --- 1. Custom Exception Handler for 404/Generic Errors ---
+# This ensures that even for "Not Found", you get a trace_id in the response body.
+@app.exception_handler(Exception)
+@app.exception_handler(404)
+async def custom_error_handler(request: Request, exc):
+    status_code = getattr(exc, "status_code", 500)
+    trace_id = getattr(request.state, "trace_id", str(uuid.uuid4()))
+    
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "error",
+            "status_code": status_code,
+            "trace_id": trace_id,
+            "message": str(exc.detail) if hasattr(exc, "detail") else "Internal Server Error",
+            "path": request.url.path
+        }
+    )
+
+# --- 2. Middleware for Correlation and Logging ---
+class ObservabilityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        
+        # Generate trace_id at the start
+        request.state.trace_id = str(uuid.uuid4())
+        
+        # Process request
+        response = await call_next(request)
+        
+        process_time = time.time() - start_time
+        status_code = response.status_code
+        
+        # Unified Log Payload
+        log_payload = {
+            "severity": "INFO" if status_code < 400 else "ERROR",
+            "timestamp": time.time(),
+            "pod": pod_name,
+            "endpoint": request.url.path,
+            "status_code": status_code,
+            "status": "ok" if status_code < 400 else "error",
+            "duration": f"{process_time:.4f}s",
+            "trace_id": request.state.trace_id,
+            "app": "hello-service"
+        }
+        
+        print(json.dumps(log_payload), flush=True)
+        REQUEST_COUNT.labels(endpoint=request.url.path, status=status_code).inc()
+        
+        # Inject trace_id into headers
+        response.headers["X-Trace-ID"] = request.state.trace_id
+        return response
+
+app.add_middleware(ObservabilityMiddleware)
+
+# --- 3. Endpoints ---
 
 @app.get("/health")
 def health():
-    REQUEST_COUNT.labels(endpoint="/health").inc()
-    return {"status": "ok"}
+    return {"status": "ok", "status_code": 200}
 
 @app.get("/hello")
 def hello(request: Request):
-    REQUEST_COUNT.labels(endpoint="/hello").inc() 
-    
-    trace_id = str(uuid.uuid4())
-    current_time = time.time()
-    status_code = 200
-    
-    log_payload = {
-        "severity": "INFO",
-        "timestamp": current_time,
-        "trace_id": trace_id,
-        "pod": pod_name,
-        "status": status_code,
-        "endpoint": "/hello",
-        "message": f"Request processed by {pod_name}",
-        "app": "hello-service" # Added this to match Loki filters
-    }
-    
-    # Using print(json.dumps) is the most reliable way in Python 3.x 
-    # for containerd to capture the line immediately.
-    print(json.dumps(log_payload), flush=True)
-    
     return {
-        "status": status_code,
-        "timestamp": current_time,
-        "pod": pod_name,
-        "trace_id": trace_id,
+        "status": "ok",
+        "status_code": 200,
+        "timestamp": time.time(),
+        "pod_name": pod_name,
+        "trace_id": request.state.trace_id,
         "message": "Hello from the platform-cluster!"
     }
 
