@@ -1,6 +1,6 @@
 # Networking module
 module "networking" {
-  source       = "../../modules/networking"
+  source       = "../modules/networking"
   project_id   = var.project_id
   region       = var.region
   network_name = var.network_name
@@ -10,7 +10,7 @@ module "networking" {
 
 # Artifact Registry module
 module "artifact_registry" {
-  source          = "../../modules/artifact_registry"
+  source          = "../modules/artifact_registry"
   project_id      = var.project_id
   region          = var.region
   repository_name = var.repository_name
@@ -18,7 +18,7 @@ module "artifact_registry" {
 
 # GKE module
 module "gke" {
-  source       = "../../modules/gke"
+  source       = "../modules/gke"
   project_id   = var.project_id
   region       = var.region
   cluster_name = var.cluster_name
