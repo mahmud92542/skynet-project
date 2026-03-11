@@ -7,8 +7,8 @@ The platform includes:
 - Infrastructure provisioning with Terraform
 - A containerized HTTP service
 - Deployment to Google Kubernetes Engine (GKE)
-- Observability stack with Prometheus, Grafana, and Loki
-- Logging, metrics, and dashboards
+- Observability stack with Prometheus, Grafana, Loki, Promtail, and Kubecost
+- Logging, metrics, dashboards, and cost monitoring
 
 The goal of this project is to demonstrate infrastructure automation, container deployment, and observability practices.
 
@@ -16,84 +16,56 @@ The goal of this project is to demonstrate infrastructure automation, container 
 
 # Repository Structure
 
+```
+
 .
-├── terraform/ # Infrastructure as Code (Terraform modules)
-├── app/ # HTTP application source code + Dockerfile
-├── k8s/ # Kubernetes manifests
-├── observability/ # Monitoring stack (Prometheus, Grafana, Loki)
+├── terraform/
+│   ├── modules/
+│   │   ├── networking/
+│   │   ├── gke/
+│   │   └── artifact_registry/
+│   │
+│   └── env/
+│       └── dev/
+│           ├── main.tf
+│           ├── variables.tf
+│           ├── outputs.tf
+│           ├── backend.tf
+│           └── terraform.tfvars.example
+│
+├── app/
+│   ├── main.py
+│   ├── requirements.txt
+│   └── Dockerfile
+│
+├── k8s/
+│   └── app-deployment.yaml
+│
+├── observability/
+│   ├── grafana.yml
+|   ├── prometheus-rbac.yml
+|   ├── prometheus.yml
+│   ├── loki/
+│   ├── promtail/
+│   └── cost-analyzer/
+│
 └── README.md
 
-
-### terraform/
-
-Contains all infrastructure code written with **Terraform**.
-
-Modules include:
-
-- networking (VPC, subnet, NAT)
-- gke (GKE cluster + node pool)
-- artifact_registry (Docker image registry)
-
-Files:
-
-```
-terraform/
-├── modules/
-│   ├── networking/
-│   ├── gke/
-│   └── artifact_registry/
-├── main.tf
-├── variables.tf
-├── outputs.tf
-├── backend.tf
-└── terraform.tfvars.example
-```
-
-Remote state is stored in a **Google Cloud Storage (GCS)** backend.
-
----
-
-### app/
-
-Contains the application source code and Dockerfile.
-
-The application is a simple HTTP service that:
-
-- exposes `/hello`
-- exposes `/metrics`
-- logs request metadata including `trace_id`
-- supports Prometheus scraping
-
-Example endpoints:
-
-```
-GET /hello
-GET /metrics
 ```
 
 ---
 
-### k8s/
+# Application
 
-Contains Kubernetes manifests used to deploy the application.
+The application is a simple HTTP service exposing three endpoints:
 
-Resources include:
+| Endpoint | Description |
+|--------|--------|
+| `/hello` | returns HTTP 200 includes the Pod name, current timestamp, trace_id, etc |
+| `/health` | returns HTTP 200 with a JSON body { "status": "ok" } |
+| `/metrics` | Prometheus metrics endpoint |
 
-- Deployment
-- Service
-- ServiceAccount
-- RBAC
-
----
-
-### observability/
-
-Contains configuration for the observability stack:
-
-- Prometheus (metrics collection)
-- Grafana (dashboards)
-- Loki (log aggregation)
-- Promtail (log shipping)
+The `/metrics` endpoint allows Prometheus to scrape application metrics.
 
 ---
 
@@ -107,41 +79,47 @@ Install the following tools:
 - Docker
 - Helm
 
-You must also have a Google Cloud project with billing enabled.
-
 ---
 
 # Infrastructure Setup
 
+Terraform is organized by environment.
+
+Navigate to the development environment:
+
+```
+
+cd terraform/env/dev
+
+```
+
 Initialize Terraform:
 
-```bash
-cd terraform
+```
+
 terraform init
-```
-
-Create a variables file:
-
-```bash
-cp terraform.tfvars.example terraform.tfvars
-```
-
-Update values in `terraform.tfvars`:
 
 ```
-project_id = "your-gcp-project-id"
-region     = "us-central1"
+
+Preview infrastructure changes:
+
+```
+
+terraform plan
+
 ```
 
 Apply infrastructure:
 
-```bash
-terraform apply
 ```
 
-This will create:
+terraform apply
 
-- VPC
+```
+
+This will provision:
+
+- VPC network
 - Subnet
 - Cloud NAT
 - GKE cluster
@@ -151,148 +129,223 @@ This will create:
 
 # Connect to the Cluster
 
-After Terraform finishes:
+After Terraform completes:
 
-```bash
-gcloud container clusters get-credentials platform-cluster \
-  --region us-central1 \
-  --project <your-project-id>
+```
+
+gcloud container clusters get-credentials platform-cluster 
+--region us-central1 
+--project <PROJECT_ID>
+
 ```
 
 Verify cluster access:
 
-```bash
+```
+
 kubectl get nodes
+
 ```
 
 ---
 
-# Build and Push the Application Image
+# Build and Push Application Image
 
-Navigate to the app directory:
+Navigate to the application directory:
 
-```bash
+```
+
 cd app
+
 ```
 
-Build the Docker image:
+Authenticate Docker with Artifact Registry:
 
-```bash
-docker build -t us-central1-docker.pkg.dev/<PROJECT_ID>/app-repo/hello-service:latest .
 ```
 
-Authenticate Docker:
-
-```bash
 gcloud auth configure-docker us-central1-docker.pkg.dev
+
 ```
 
-Push the image:
+Build and push the multi-architecture image:
 
-```bash
-docker push us-central1-docker.pkg.dev/<PROJECT_ID>/app-repo/hello-service:latest
+```
+
+docker buildx build 
+--platform linux/amd64,linux/arm64 
+-t us-central1-docker.pkg.dev/<PROJECT_ID>/app-repo/hello-service:1.7 
+--push .
+
 ```
 
 ---
 
 # Deploy Application to Kubernetes
 
-Apply manifests:
+Apply Kubernetes manifests:
 
-```bash
+```
+
 kubectl apply -f k8s/
+
 ```
 
 Verify deployment:
 
-```bash
+```
+
 kubectl get pods
+
 ```
 
-Test service:
+Test the service:
 
-```bash
+```
+
 kubectl port-forward svc/hello-service 8080:80
-```
-
-Open:
 
 ```
+
+Test endpoints:
+
+```
+
 http://localhost:8080/hello
+http://localhost:8080/health
+http://localhost:8080/metrics
+
 ```
 
 ---
 
 # Deploy Observability Stack
 
-Install monitoring components with Helm.
+The observability stack is installed using Helm with custom values files located inside the `observability/` & their perspective directory.
 
-Add Helm repositories:
+---
 
-```bash
-helm repo add grafana https://grafana.github.io/helm-charts
-helm repo update
+# Install Loki
+
 ```
+cd observability/
+helm upgrade --install loki grafana/loki 
+--namespace monitoring 
+-f observability/loki/loki-values.yaml
 
-Install Loki:
-
-```bash
-helm upgrade --install loki grafana/loki \
-  --namespace monitoring \
-  --create-namespace \
-  --set deploymentMode=SingleBinary \
-  --set loki.auth_enabled=false \
-  --set loki.storage.type=filesystem
-```
-
-Install Promtail:
-
-```bash
-helm upgrade --install promtail grafana/promtail \
-  --namespace monitoring \
-  --set "config.clients[0].url=http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
-```
-
-Install Prometheus + Grafana:
-
-```bash
-helm upgrade --install prometheus grafana/k8s-monitoring \
-  --namespace monitoring
 ```
 
 ---
 
-# Verify Observability Stack
+# Install Promtail
 
-Check pods:
-
-```bash
-kubectl get pods -n monitoring
 ```
 
-Access Grafana:
+helm upgrade --install promtail grafana/promtail 
+--namespace monitoring 
+-f observability/promtail/promtail-values.yaml
 
-```bash
-kubectl port-forward svc/grafana -n monitoring 3000:80
+```
+
+---
+
+# Install Prometheus
+
+```
+
+kubectl apply -f prometheus.yaml
+kubectl apply -f prometheus-rbac.yaml
+
+```
+
+---
+
+# Install Grafana
+
+```
+
+kubectl apply -f grafana.yml
+
+```
+
+---
+
+# Install Kubecost
+
+```
+
+helm upgrade --install kubecost kubecost/cost-analyzer 
+--namespace kubecost 
+--create-namespace 
+-f observability/kubecost/kubecost-values.yaml
+
+```
+
+---
+
+# Access Observability Tools
+
+Most services can be accessed using port forwarding.
+
+General command:
+
+```
+
+kubectl port-forward -n <namespace> svc/<service-name> <local-port>:<service-port>
+
+```
+
+Example for Grafana:
+
+```
+
+kubectl port-forward -n monitoring svc/grafana 3000:80
+
+```
+
+Open in browser:
+
+```
+
+http://localhost:3000
+
+```
+
+---
+
+# Access Kubecost
+
+Kubecost uses a deployment instead of a service:
+
+```
+
+kubectl port-forward -n kubecost deployment/kubecost-cost-analyzer 9091:9090
+
 ```
 
 Open:
 
 ```
-http://localhost:3000
-```
 
-Default credentials:
+http://localhost:9091
 
 ```
-admin / admin
-```
 
-Verify:
+Kubecost provides cost insights and resource utilization for the Kubernetes cluster.
 
-- Metrics visible from Prometheus
-- Logs visible in Loki
-- Application dashboard in Grafana
+---
+
+# Cost Monitoring
+
+Cluster costs can be monitored directly inside Kubecost.
+
+Kubecost analyzes:
+
+- Node usage
+- Pod resource consumption
+- Namespace costs
+- Estimated monthly cloud cost
+
+This provides a more accurate estimate than static cost calculations.
 
 ---
 
@@ -300,47 +353,59 @@ Verify:
 
 ### 1. Terraform Modules
 
-Infrastructure components were separated into modules (networking, gke, artifact registry) to improve reusability and maintainability.
+Infrastructure components are organized into reusable Terraform modules:
+
+- networking
+- gke
+- artifact_registry
+
+This improves maintainability and scalability.
 
 ### 2. GCS Backend for Terraform State
 
-Terraform remote state is stored in a GCS bucket to enable safe state management and prevent local state conflicts.
+Terraform state is stored remotely in Google Cloud Storage to prevent state conflicts and enable team collaboration.
 
 ### 3. Loki for Log Aggregation
 
-Loki was chosen instead of Elasticsearch because it integrates natively with Grafana and has significantly lower resource overhead.
+Loki was selected instead of Elasticsearch because it integrates natively with Grafana and has significantly lower operational overhead.
 
 ### 4. Helm for Observability Stack
 
-Helm was used to install monitoring components to simplify deployment and configuration management.
+Helm simplifies installation and configuration of monitoring tools in Kubernetes.
+
+### 5. Kubecost for Cost Visibility
+
+Kubecost provides real-time insights into Kubernetes infrastructure costs and resource utilization.
 
 ---
 
 # Estimated GCP Cost (24 hours)
 
-Approximate cost for running this stack for 24 hours in `us-central1`.
+Approximate cost for running this stack in `us-central1`.
 
 | Resource | Estimated Cost |
 |--------|--------|
-| GKE control plane | $0.10/hour |
-| 1 × e2-medium node | ~$0.033/hour |
-| Persistent storage | ~$0.02 |
-| Networking/NAT | ~$0.02 |
+| GKE control plane | ~$2.40 |
+| e2-medium node | ~$0.80 |
+| Networking / NAT | ~$0.20 |
 
 Estimated total:
 
-**~$1.20 – $1.50 per day**
+**~$3 – $4 per day**
 
-Costs may vary depending on usage and region.
+Kubecost provides more accurate real-time cost tracking.
 
 ---
 
 # Cleanup
 
-Destroy infrastructure:
+To remove all infrastructure:
 
-```bash
+```
+
+cd terraform/env/dev
 terraform destroy
+
 ```
 
 ---
@@ -349,10 +414,12 @@ terraform destroy
 
 This project demonstrates:
 
-- Infrastructure automation with Terraform
+- Infrastructure automation using Terraform
 - Containerized application deployment
 - Kubernetes workload management
-- Monitoring with Prometheus and Grafana
-- Centralized logging with Loki
+- Metrics monitoring with Prometheus
+- Log aggregation with Loki
+- Visualization with Grafana
+- Kubernetes cost monitoring using Kubecost
 
-The platform provides a reproducible environment for deploying and monitoring containerized applications in Google Cloud.
+The platform provides a reproducible environment for deploying and monitoring containerized applications on Google Cloud.
