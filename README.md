@@ -24,14 +24,11 @@ The goal of this project is to demonstrate infrastructure automation, container 
 │   │   ├── networking/
 │   │   ├── gke/
 │   │   └── artifact_registry/
-│   │
-│   └── env/
-│       └── dev/
-│           ├── main.tf
-│           ├── variables.tf
-│           ├── outputs.tf
-│           ├── backend.tf
-│           └── terraform.tfvars.example
+│   ├──main.tf
+│   ├── variables.tf
+│   ├── outputs.tf
+│   ├── backend.tf
+│   └── terraform.tfvars.example
 │
 ├── app/
 │   ├── main.py
@@ -89,7 +86,7 @@ Navigate to the development environment:
 
 ```
 
-cd terraform/env/dev
+cd terraform
 
 ```
 
